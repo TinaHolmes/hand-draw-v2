@@ -196,7 +196,7 @@ const SENSITIVITY = {
 const CONFIG = { ...SENSITIVITY['标准'] };
 CONFIG.menuHoldFrames = 8;    // 张开手掌需持续帧数（防误触）
 CONFIG.menuCooldownMs = 900;  // 菜单切换冷却
-CONFIG.victoryHoldFrames = 6; // 剪刀手需持续帧数
+CONFIG.victoryHoldFrames = 3; // 剪刀手需持续帧数
 CONFIG.zoomHoldFrames = 3;    // 缩放手势进入帧数
 CONFIG.pinchRatio = 0.38;     // 捏合距离 / 手部尺寸 阈值
 CONFIG.pointMerge = 1.5;      // 相邻点合并最小像素距离
@@ -298,9 +298,37 @@ function gestureIndexPoint(lm) {
         && isFingerBent(lm, 16, 14, 13) && isFingerBent(lm, 20, 18, 17);
 }
 // 剪刀手：食指+中指伸直，无名指+小指弯曲
+// 剪刀手 ✌️
+// 食指、中指伸直
+// 无名指、小指通过指尖距离判断收拢
 function gestureVictory(lm) {
-    return isFingerStraight(lm, 8, 6, 5) && isFingerStraight(lm, 12, 10, 9)
-        && isFingerBent(lm, 16, 14, 13) && isFingerBent(lm, 20, 18, 17);
+
+    const indexStraight =
+        isFingerStraight(lm, 8, 6, 5);
+
+    const middleStraight =
+        isFingerStraight(lm, 12, 10, 9);
+
+
+    // 手掌尺寸
+    const palmSize = dist(lm[0], lm[9]);
+
+
+    // 无名指、小指应该靠近掌心
+    const ringFold =
+        dist(lm[16], lm[0]) < palmSize * 1.35;
+
+
+    const pinkyFold =
+        dist(lm[20], lm[0]) < palmSize * 1.35;
+
+
+    return (
+        indexStraight &&
+        middleStraight &&
+        ringFold &&
+        pinkyFold
+    );
 }
 // 捏合：拇指尖与食指尖距离 < 手部尺寸 × 阈值（动态，适应远近）
 function gesturePinch(lm) {
@@ -903,8 +931,34 @@ function handleGestures(handsList) {
     // --- 剪刀手 → 雪花消散（任意一只手比剪刀即可，防抖 + 上升沿） ---
     const anyVictory = handsList.some(gestureVictory);
     const victoryActive = victoryDb.update(anyVictory);
-    if (victoryActive && !victoryWasActive && !state.dissolving && strokes.length > 0) {
-        startDissolve();
+    if (
+    victoryActive &&
+    !victoryWasActive &&
+    !state.dissolving &&
+    strokes.length > 0
+) {
+
+    // 清理正在绘制状态
+    activeStroke = [null,null];
+
+
+    startDissolve();
+
+
+    playBeep(
+        520,
+        0.25,
+        'triangle'
+    );
+
+
+    victoryDb.reset();
+
+    victoryWasActive = false;
+
+
+    return;
+}
         playBeep(520, 0.25, 'triangle');
         victoryDb.reset();           // 触发后重置防抖，避免连续误触发
         victoryWasActive = false;

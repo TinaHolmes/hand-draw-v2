@@ -945,6 +945,7 @@ function showError(msg) {
 let currentStream = null;
 let cameraLoopId = null;
 let handsModel = null;
+let initStartTime = 0;
 
 function stopCamera() {
     if (cameraLoopId) { cancelAnimationFrame(cameraLoopId); cameraLoopId = null; }
@@ -964,11 +965,9 @@ function showCameraPanel(title, hint, showRetry = true) {
 }
 
 async function enumerateCameras() {
-    let tmp = null;
-    try { tmp = await navigator.mediaDevices.getUserMedia({ video: true }); }
-    catch (e) { /* 权限未给时 enumerate 只能拿到空 label */ }
+    // 不再预先申请临时流，避免二次占用摄像头；
+    // 浏览器授权后 enumerateDevices 自然会有 label。
     const devices = await navigator.mediaDevices.enumerateDevices();
-    if (tmp) tmp.getTracks().forEach(t => t.stop()); // 必须释放临时流，否则占用摄像头
     const videoDevices = devices.filter(d => d.kind === 'videoinput');
     cameraSelect.innerHTML = '<option value="">默认摄像头</option>' +
         videoDevices.map((d, i) => `<option value="${d.deviceId}">${d.label || '摄像头 ' + (i + 1)}</option>`).join('');
@@ -1073,6 +1072,18 @@ function init() {
         minTrackingConfidence: 0.55,
     });
     handsModel.onResults(onResults);
+
+    initStartTime = Date.now();
+    // 10 秒后 onResults 仍未被调用，大概率是模型/网络/摄像头完全无响应
+    setTimeout(() => {
+        if (loadingDiv.style.display !== 'none') {
+            showCameraPanel(
+                '初始化超时',
+                '摄像头或 AI 模型长时间没有响应。<br>请检查网络连接、确认摄像头未被占用，然后点击"重新启动"。',
+                true
+            );
+        }
+    }, 10000);
 
     enumerateCameras().then(() => startCamera());
 }

@@ -41,6 +41,32 @@
         border: 1px solid rgba(255,107,107,.4); display: none; max-width: 80vw; line-height: 1.7;
     }
 
+    /* 摄像头选择器 */
+    #cameraPanel {
+        position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+        z-index: 120; text-align: center; color: #fff;
+        background: rgba(0,0,0,.88); padding: 34px 40px; border-radius: 18px;
+        border: 1px solid rgba(255,255,255,.15); max-width: 86vw; min-width: 300px;
+        display: none; flex-direction: column; align-items: center; gap: 16px;
+    }
+    #cameraIcon { font-size: 52px; margin-bottom: 4px; }
+    #cameraMsg { font-size: 17px; line-height: 1.7; max-width: 420px; }
+    #cameraSelect {
+        padding: 10px 14px; border-radius: 10px; border: 1px solid rgba(255,255,255,.25);
+        background: #222; color: #fff; font-size: 15px; min-width: 260px; cursor: pointer;
+    }
+    #cameraSelect option { background: #222; color: #fff; }
+    #cameraButtons { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; margin-top: 4px; }
+    #cameraButtons button {
+        padding: 10px 22px; border-radius: 10px; border: none; cursor: pointer; font-size: 15px; font-weight: 600;
+    }
+    #cameraRetryBtn { background: #4fc3f7; color: #10202a; }
+    #cameraRetryBtn:hover { background: #81d4fa; }
+    #cameraNewTabBtn { background: #ff9800; color: #fff; }
+    #cameraNewTabBtn:hover { background: #ffb74d; }
+    #cameraHint { font-size: 13px; color: rgba(255,255,255,.55); max-width: 420px; line-height: 1.6; }
+    #cameraHint code { background: rgba(255,255,255,.15); padding: 2px 6px; border-radius: 4px; }
+
     /* HUD 状态栏 */
     #hud {
         position: absolute; left: 12px; bottom: 12px; z-index: 60;
@@ -79,7 +105,19 @@
     </div>
     <div id="error"></div>
 
-    <video id="input_video"></video>
+    <!-- 摄像头选择器 / 重试面板 -->
+    <div id="cameraPanel" style="display:none;">
+        <div id="cameraIcon">📷</div>
+        <div id="cameraMsg">正在初始化摄像头…</div>
+        <select id="cameraSelect"><option value="">默认摄像头</option></select>
+        <div id="cameraButtons">
+            <button id="cameraRetryBtn">重新启动</button>
+            <button id="cameraNewTabBtn" style="display:none;">在新标签页打开</button>
+        </div>
+        <div id="cameraHint"></div>
+    </div>
+
+    <video id="input_video" playsinline autoplay muted></video>
     <canvas id="output_canvas"></canvas>
 
     <div id="hud" style="display:none">
@@ -140,6 +178,14 @@ const hudLock = document.getElementById('hudLock');
 const guideDiv = document.getElementById('guide');
 const guideBtn = document.getElementById('guideBtn');
 const colorPicker = document.getElementById('colorPicker');
+
+// 摄像头面板
+const cameraPanel = document.getElementById('cameraPanel');
+const cameraMsg = document.getElementById('cameraMsg');
+const cameraSelect = document.getElementById('cameraSelect');
+const cameraRetryBtn = document.getElementById('cameraRetryBtn');
+const cameraNewTabBtn = document.getElementById('cameraNewTabBtn');
+const cameraHint = document.getElementById('cameraHint');
 
 // ---------- 灵敏度配置（可切换） ----------
 const SENSITIVITY = {
@@ -795,25 +841,20 @@ function onResults(results) {
 
     // 1. 背景（视频 或 纯色/透明 + 网格）
     ctx.clearRect(0, 0, w, h);
+
+    // 镜像变换：视频和骨架使用同一套坐标系，保证画面与手势同步
+    ctx.save();
+    ctx.translate(w, 0); ctx.scale(-1, 1);
+
     if (state.background === 'video') {
-        ctx.save();
-        ctx.translate(w, 0); ctx.scale(-1, 1); // 镜像，保证手势与画面同步
         ctx.drawImage(results.image, 0, 0, w, h);
-        ctx.restore();
-    } else {
-        const bg = bgFillStyle();
-        if (bg) { ctx.fillStyle = bg; ctx.fillRect(0, 0, w, h); drawGrid(); }
     }
 
-    // 2. 笔迹 / 粒子
-    if (state.dissolving) updateParticles();
-    else renderStrokes(ctx);
-
-    // 3. 手势逻辑
+    // 2. 手势逻辑
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
         handleGestures(results.multiHandLandmarks);
 
-        // 4. 骨架（可选）
+        // 3. 骨架（可选）——与视频在同一镜像空间绘制
         if (state.showSkeleton) {
             for (const lm of results.multiHandLandmarks) {
                 drawConnectors(ctx, lm, HAND_CONNECTIONS, { color: 'rgba(0,255,170,0.5)', lineWidth: 1.5 });
@@ -821,6 +862,11 @@ function onResults(results) {
             }
         }
     }
+    ctx.restore();
+
+    // 4. 笔迹 / 粒子（在屏幕坐标系绘制，不参与视频镜像）
+    if (state.dissolving) updateParticles();
+    else renderStrokes(ctx);
 
     // 5. 菜单 UI
     if (state.menuOpen) drawUI();
@@ -854,11 +900,14 @@ function handleGestures(handsList) {
         return;
     }
 
-    // --- 剪刀手 → 雪花消散（防抖 + 上升沿） ---
-    const victoryActive = victoryDb.update(gestureVictory(main));
+    // --- 剪刀手 → 雪花消散（任意一只手比剪刀即可，防抖 + 上升沿） ---
+    const anyVictory = handsList.some(gestureVictory);
+    const victoryActive = victoryDb.update(anyVictory);
     if (victoryActive && !victoryWasActive && !state.dissolving && strokes.length > 0) {
         startDissolve();
         playBeep(520, 0.25, 'triangle');
+        victoryDb.reset();           // 触发后重置防抖，避免连续误触发
+        victoryWasActive = false;
         return;
     }
     victoryWasActive = victoryActive;
@@ -893,33 +942,135 @@ function showError(msg) {
     errorDiv.style.display = 'block';
 }
 
-let camera = null;
+let currentStream = null;
+let cameraLoopId = null;
+let handsModel = null;
+
+function stopCamera() {
+    if (cameraLoopId) { cancelAnimationFrame(cameraLoopId); cameraLoopId = null; }
+    if (currentStream) { currentStream.getTracks().forEach(t => t.stop()); currentStream = null; }
+    videoElement.pause();
+    videoElement.srcObject = null;
+}
+
+function showCameraPanel(title, hint, showRetry = true) {
+    loadingDiv.style.display = 'none';
+    errorDiv.style.display = 'none';
+    cameraPanel.style.display = 'flex';
+    cameraMsg.innerHTML = title;
+    cameraHint.innerHTML = hint;
+    cameraRetryBtn.style.display = showRetry ? 'inline-block' : 'none';
+    cameraNewTabBtn.style.display = (window.self !== window.top) ? 'inline-block' : 'none';
+}
+
+async function enumerateCameras() {
+    try { await navigator.mediaDevices.getUserMedia({ video: true }); }
+    catch (e) { /* 权限未给时 enumerate 只能拿到空 label */ }
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const videoDevices = devices.filter(d => d.kind === 'videoinput');
+    cameraSelect.innerHTML = '<option value="">默认摄像头</option>' +
+        videoDevices.map((d, i) => `<option value="${d.deviceId}">${d.label || '摄像头 ' + (i + 1)}</option>`).join('');
+    return videoDevices.length;
+}
+
+function handleCameraError(err) {
+    stopCamera();
+    console.error('Camera error:', err);
+    const name = err.name || '';
+    const msg = err.message || String(err);
+    let title = '无法启动摄像头';
+    let hint = '请确认摄像头已连接，且未被其他应用（微信视频、腾讯会议、Zoom 等）占用。<br>也可尝试重新启动或选择不同设备。';
+    if (name === 'NotAllowedError' || msg.includes('Permission denied') || msg.includes('Permission')) {
+        title = '摄像头权限被拒绝';
+        hint = '请点击地址栏左侧的 🔒 图标，将摄像头权限改为"允许"，然后刷新页面。<br>如果在 iframe 中打开，请在浏览器的新标签页中访问本页面。';
+    } else if (name === 'NotReadableError' || msg.includes('Could not start video source') || msg.includes('start source')) {
+        title = '摄像头被占用或无法读取';
+        hint = '<strong>NotReadableError</strong> 通常是因为摄像头正被其他程序占用。<br>请关闭微信视频、腾讯会议、Zoom、QQ 视频等占用摄像头的软件，再点"重新启动"。<br>也可在下拉框中切换到另一个摄像头。';
+    } else if (name === 'OverconstrainedError' || msg.includes('constraints')) {
+        title = '摄像头不支持当前分辨率';
+        hint = '请尝试选择其他摄像头，或点击"重新启动"重试。';
+    } else if (name === 'NotFoundError' || msg.includes('Devices not found')) {
+        title = '未检测到摄像头';
+        hint = '请检查摄像头是否已连接，并确认浏览器已授权访问。';
+    } else if (name === 'AbortError') {
+        title = '摄像头启动被中断';
+        hint = '请点击"重新启动"重试，并避免在启动时切换标签页。';
+    }
+    showCameraPanel(title, hint, true);
+}
+
+async function startCamera(deviceId = '') {
+    loadingDiv.style.display = 'flex';
+    cameraPanel.style.display = 'none';
+    errorDiv.style.display = 'none';
+    try {
+        stopCamera();
+        const constraints = {
+            video: {
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                facingMode: deviceId ? undefined : { ideal: 'user' }
+            }
+        };
+        if (deviceId) {
+            constraints.video.deviceId = { exact: deviceId };
+            delete constraints.video.facingMode;
+        }
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        currentStream = stream;
+        videoElement.srcObject = stream;
+        await videoElement.play();
+        loadingDiv.style.display = 'none';
+        cameraPanel.style.display = 'none';
+
+        function loop() {
+            if (!currentStream) return;
+            cameraLoopId = requestAnimationFrame(loop);
+            if (videoElement.readyState >= 2 && handsModel) {
+                handsModel.send({ image: videoElement }).catch(() => { });
+            }
+        }
+        loop();
+    } catch (err) {
+        handleCameraError(err);
+    }
+}
+
 function init() {
-    if (typeof Hands === 'undefined' || typeof Camera === 'undefined') {
+    if (typeof Hands === 'undefined') {
         showError('AI 模型脚本加载失败，请检查网络连接后刷新页面。');
         return;
     }
 
-    const hands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
-    hands.setOptions({
+    // 如果在 iframe 中，直接提示用户到新标签页打开
+    if (window.self !== window.top) {
+        showCameraPanel(
+            '当前页面在 iframe 中加载',
+            '浏览器通常会限制 iframe 中的摄像头权限，导致无法启动。<br>请点击下方"在新标签页打开"按钮，然后在 Chrome/Edge 地址栏中允许摄像头权限。',
+            false
+        );
+        return;
+    }
+
+    handsModel = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+    handsModel.setOptions({
         maxNumHands: 2,
         modelComplexity: 1,
-        minDetectionConfidence: 0.6,  // 降低检测阈值 → 更灵敏
+        minDetectionConfidence: 0.6,
         minTrackingConfidence: 0.55,
     });
-    hands.onResults(onResults);
+    handsModel.onResults(onResults);
 
-    camera = new Camera(videoElement, {
-        onFrame: async () => { await hands.send({ image: videoElement }); },
-        width: 1280,
-        height: 720,
-    });
-    camera.start().catch(err => showError('无法启动摄像头：' + (err.message || err) + '<br>摄像头功能需要 HTTPS 环境（如 GitHub Pages / 本地 HTTPS 服务），请使用 https:// 地址访问本页面。'));
+    enumerateCameras().then(() => startCamera());
 }
 
 // ---------- 事件绑定 ----------
 guideBtn.addEventListener('click', () => guideDiv.style.display = 'none');
 setTimeout(() => { guideDiv.style.display = 'flex'; }, 1500);
+
+cameraRetryBtn.addEventListener('click', () => startCamera(cameraSelect.value));
+cameraNewTabBtn.addEventListener('click', () => window.open(location.href, '_blank'));
+cameraSelect.addEventListener('change', () => startCamera(cameraSelect.value));
 
 colorPicker.addEventListener('input', e => {
     state.color = e.target.value;

@@ -964,9 +964,11 @@ function showCameraPanel(title, hint, showRetry = true) {
 }
 
 async function enumerateCameras() {
-    try { await navigator.mediaDevices.getUserMedia({ video: true }); }
+    let tmp = null;
+    try { tmp = await navigator.mediaDevices.getUserMedia({ video: true }); }
     catch (e) { /* 权限未给时 enumerate 只能拿到空 label */ }
     const devices = await navigator.mediaDevices.enumerateDevices();
+    if (tmp) tmp.getTracks().forEach(t => t.stop()); // 必须释放临时流，否则占用摄像头
     const videoDevices = devices.filter(d => d.kind === 'videoinput');
     cameraSelect.innerHTML = '<option value="">默认摄像头</option>' +
         videoDevices.map((d, i) => `<option value="${d.deviceId}">${d.label || '摄像头 ' + (i + 1)}</option>`).join('');
@@ -1020,8 +1022,19 @@ async function startCamera(deviceId = '') {
         currentStream = stream;
         videoElement.srcObject = stream;
         await videoElement.play();
-        loadingDiv.style.display = 'none';
-        cameraPanel.style.display = 'none';
+
+        // 部分摄像头会被成功打开但无实际画面，加超时检测
+        const noPictureTimer = setTimeout(() => {
+            if (videoElement.videoWidth === 0 || videoElement.readyState < 2) {
+                handleCameraError({ name: 'NotReadableError', message: 'Could not start video source' });
+            }
+        }, 3500);
+
+        videoElement.onloadeddata = () => {
+            clearTimeout(noPictureTimer);
+            loadingDiv.style.display = 'none';
+            cameraPanel.style.display = 'none';
+        };
 
         function loop() {
             if (!currentStream) return;

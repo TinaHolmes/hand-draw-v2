@@ -945,11 +945,14 @@ function showError(msg) {
 let currentStream = null;
 let cameraLoopId = null;
 let handsModel = null;
-let initStartTime = 0;
+let mpCamera = null;          // MediaPipe Camera 工具类实例
+let initTimeoutId = null;
+let cameraStartedAt = 0;
 
 function stopCamera() {
     if (cameraLoopId) { cancelAnimationFrame(cameraLoopId); cameraLoopId = null; }
     if (currentStream) { currentStream.getTracks().forEach(t => t.stop()); currentStream = null; }
+    if (mpCamera) { try { mpCamera.stop(); } catch (e) { } mpCamera = null; }
     videoElement.pause();
     videoElement.srcObject = null;
 }
@@ -965,13 +968,16 @@ function showCameraPanel(title, hint, showRetry = true) {
 }
 
 async function enumerateCameras() {
-    // 不再预先申请临时流，避免二次占用摄像头；
-    // 浏览器授权后 enumerateDevices 自然会有 label。
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    const videoDevices = devices.filter(d => d.kind === 'videoinput');
-    cameraSelect.innerHTML = '<option value="">默认摄像头</option>' +
-        videoDevices.map((d, i) => `<option value="${d.deviceId}">${d.label || '摄像头 ' + (i + 1)}</option>`).join('');
-    return videoDevices.length;
+    try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(d => d.kind === 'videoinput');
+        cameraSelect.innerHTML = '<option value="">默认摄像头（推荐）</option>' +
+            videoDevices.map((d, i) => `<option value="${d.deviceId}">${d.label || '摄像头 ' + (i + 1)}</option>`).join('');
+        return videoDevices.length;
+    } catch (e) {
+        console.warn('enumerateDevices failed', e);
+        return 0;
+    }
 }
 
 function handleCameraError(err) {
@@ -1000,7 +1006,7 @@ function handleCameraError(err) {
     showCameraPanel(title, hint, true);
 }
 
-async function startCamera(deviceId = '') {
+async function startNativeCamera(deviceId = '') {
     loadingDiv.style.display = 'flex';
     cameraPanel.style.display = 'none';
     errorDiv.style.display = 'none';
@@ -1020,7 +1026,9 @@ async function startCamera(deviceId = '') {
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         currentStream = stream;
         videoElement.srcObject = stream;
-        await videoElement.play();
+
+        // 在 play() 之前设置事件，避免漏掉
+        videoElement.onloadedmetadata = () => { videoElement.play().catch(() => { }); };
 
         // 部分摄像头会被成功打开但无实际画面，加超时检测
         const noPictureTimer = setTimeout(() => {
@@ -1028,23 +1036,67 @@ async function startCamera(deviceId = '') {
                 handleCameraError({ name: 'NotReadableError', message: 'Could not start video source' });
             }
         }, 3500);
-
         videoElement.onloadeddata = () => {
             clearTimeout(noPictureTimer);
             loadingDiv.style.display = 'none';
             cameraPanel.style.display = 'none';
         };
+        await videoElement.play();
 
-        function loop() {
+        async function loop() {
             if (!currentStream) return;
             cameraLoopId = requestAnimationFrame(loop);
             if (videoElement.readyState >= 2 && handsModel) {
-                handsModel.send({ image: videoElement }).catch(() => { });
+                try { await handsModel.send({ image: videoElement }); }
+                catch (e) { console.warn('hands send error', e); }
             }
         }
         loop();
     } catch (err) {
         handleCameraError(err);
+    }
+}
+
+async function startMpCamera() {
+    loadingDiv.style.display = 'flex';
+    cameraPanel.style.display = 'none';
+    errorDiv.style.display = 'none';
+    try {
+        stopCamera();
+        mpCamera = new Camera(videoElement, {
+            onFrame: async () => {
+                if (handsModel) await handsModel.send({ image: videoElement });
+            },
+            width: 1280,
+            height: 720,
+        });
+        await mpCamera.start();
+    } catch (err) {
+        console.warn('MediaPipe Camera failed, fallback to native', err);
+        await startNativeCamera();
+    }
+}
+
+async function startCamera(deviceId = '') {
+    if (initTimeoutId) clearTimeout(initTimeoutId);
+    cameraStartedAt = Date.now();
+    initTimeoutId = setTimeout(() => {
+        if (loadingDiv.style.display !== 'none') {
+            showCameraPanel(
+                '初始化超时',
+                '摄像头或 AI 模型长时间没有响应（已超过 12 秒）。<br>常见原因：<br>1. 网络较慢，MediaPipe 模型未下载完成；<br>2. 摄像头被占用；<br>3. 浏览器限制了摄像头权限。<br>请检查网络、关闭占用摄像头的软件，或点击"重新启动"。',
+                true
+            );
+        }
+    }, 12000);
+
+    await enumerateCameras();
+    if (deviceId) {
+        await startNativeCamera(deviceId);
+    } else if (typeof Camera !== 'undefined') {
+        await startMpCamera();
+    } else {
+        await startNativeCamera();
     }
 }
 
@@ -1073,19 +1125,7 @@ function init() {
     });
     handsModel.onResults(onResults);
 
-    initStartTime = Date.now();
-    // 10 秒后 onResults 仍未被调用，大概率是模型/网络/摄像头完全无响应
-    setTimeout(() => {
-        if (loadingDiv.style.display !== 'none') {
-            showCameraPanel(
-                '初始化超时',
-                '摄像头或 AI 模型长时间没有响应。<br>请检查网络连接、确认摄像头未被占用，然后点击"重新启动"。',
-                true
-            );
-        }
-    }, 10000);
-
-    enumerateCameras().then(() => startCamera());
+    startCamera();
 }
 
 // ---------- 事件绑定 ----------

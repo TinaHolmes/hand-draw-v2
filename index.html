@@ -71,7 +71,9 @@
     function palmOpen(l) { return l[8].y < l[6].y && l[12].y < l[10].y && l[16].y < l[14].y && l[20].y < l[18].y; }
     function pinch(l) { return distance(l[4], l[8]) < .055; }
     function victory(l) { return l[8].y < l[6].y && l[12].y < l[10].y && l[16].y > l[14].y && l[20].y > l[18].y; }
-    function rawPoint(l) { const x = l[8].x * canvas.width, y = l[8].y * canvas.height, cx = canvas.width / 2, cy = canvas.height / 2; return { x: (x - cx) / state.scale + cx, y: (y - cy) / state.scale + cy }; }
+    // Hands returns coordinates in the camera's direction, while the visible canvas is mirrored.
+    // Flip the x coordinate once here so drawing stays directly under the fingertip.
+    function rawPoint(l) { const x = (1 - l[8].x) * canvas.width, y = l[8].y * canvas.height, cx = canvas.width / 2, cy = canvas.height / 2; return { x: (x - cx) / state.scale + cx, y: (y - cy) / state.scale + cy }; }
     function drawStrokes(target = ctx) { const cx = canvas.width / 2, cy = canvas.height / 2; target.save(); target.translate(cx, cy); target.scale(state.scale, state.scale); target.translate(-cx, -cy); target.lineCap = target.lineJoin = 'round'; strokes.forEach(s => { if (!s.points.length) return; target.beginPath(); target.strokeStyle = s.color; target.lineWidth = s.size; target.moveTo(s.points[0].x, s.points[0].y); for (let i = 1; i < s.points.length; i++) target.lineTo(s.points[i].x, s.points[i].y); target.stroke(); }); target.restore(); }
     function erase(point) { const radius = 30 / state.scale; strokes = strokes.map(s => ({ ...s, points: s.points.filter(p => distance(p, point) > radius) })).filter(s => s.points.length); }
     const menuItems = [
